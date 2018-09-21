@@ -2,6 +2,7 @@
 
 from os import listdir
 from ta import *
+import re
 import pandas, numpy as np
 import matplotlib.pyplot as plt
 from sklearn.datasets import load_iris
@@ -12,6 +13,11 @@ from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 ################################################
 ###### Reading Data
 ################################################
+
+def listCurrenciesInDir(data_dir):
+    return list(np.unique(
+        [re.sub('DAT_MT_(\w{6}).*', r'\1', a) for a in listdir(data_dir)]
+        ))
 
 def readDEX(filepath):
     rawData = pandas.read_csv(filepath).replace('.', np.nan).fillna(method='ffill')
@@ -47,9 +53,6 @@ def readAllDatForCurrency(data_dir, currencyCode):
 ################################################
 ###### Processing Input/Output Cols
 ################################################
-
-input_calculators=[trend.dpo, trend.macd, trend.macd_signal, trend.macd_diff, momentum.tsi, momentum.rsi, trend.trix, volatility.bollinger_hband, volatility.bollinger_lband]
-output_calculators=[calcGain]
 
 def runCalculators(series, calculators=[]):
     """
@@ -98,6 +101,30 @@ def trainDecisionTree(inputDf, outputDf):
 
 
 ################################################
+###### Execute Trades
+################################################
+def stdConfidenceTrades(predictions, buy_confidence=1.5, sell_confidence=1.1):
+    """
+    Buy signals when prediction is above buy_confidence * standardDeviation and sells with similar metric
+    """
+    smooth_preds = pd.Series(predictions).rolling(5).mean()
+    buy_thresh = np.mean(smooth_preds) + buy_confidence * np.std(smooth_preds)
+    sell_thresh = np.mean(smooth_preds) - sell_confidence * np.std(smooth_preds)
+    buy_positions = np.where(predictions > buy_thresh)[0]
+    sell_positions = np.where(predictions < sell_thresh)[0]
+    
+    buys = buy_positions
+    sells = []
+    curSell = 0
+    for curBuy in buys:
+        arr = np.where(sell_positions > curBuy)[0]
+        if len(arr):
+            sells.append(sell_positions[arr[0]])
+    tradePairs = list(zip(buys, sells))
+    return tradePairs
+
+
+################################################
 ###### Evaluate Performance
 ################################################
 def getBuySellGains(series, trades):
@@ -113,14 +140,66 @@ def getBuySellGains(series, trades):
     tradeGains = np.add(np.divide(tradeGains, 100), 1.0)
     return np.product(tradeGains)
 
+def getSummary(backTestResult):
+    
+    returns = np.add(np.divide(others.daily_return(backTestResult['test_df'].close),100),1)
+    
+    return {
+        'filename' : backTestResult['filename'],
+        'gain' : backTestResult['gain'],
+        'total_gain' : np.product(returns),
+        'beat_market' : backTestResult['gain'] > np.product(returns),
+        'start_date' : backTestResult['test_df']['date'].iloc[0],
+        'end_date' : backTestResult['test_df']['date'].iloc[-1]
+    }
 
+
+def plotResult(curResult, startInd, endInd):
+    buyPositionInd = [a[0] for a in curResult['trades']]
+    sellPositionInd = np.unique([a[1] for a in curResult['trades']])
+
+    indsOfBuys = curResult['test_df'].iloc[buyPositionInd].index
+    indsOfSells = curResult['test_df'].iloc[sellPositionInd].index
+    curResult['test_df']['buySig'] = curResult['test_df']['close'][indsOfBuys]
+    curResult['test_df']['sellSig'] = curResult['test_df']['close'][indsOfSells]
+
+    tmpDf = curResult['test_df'][startInd:endInd]
+
+    fig, ax1 = plt.subplots()
+    color = 'tab:blue'
+    ax1.set_xlabel('date')
+    ax1.set_ylabel('value', color=color)
+    ax1.plot(tmpDf.index, tmpDf['close'], color=color)
+    ax1.scatter(tmpDf.index, tmpDf['buySig'], color='green')
+    ax1.scatter(tmpDf.index, tmpDf['sellSig'], color='red')
+    ax1.tick_params(axis='y', labelcolor=color)
+
+    ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
+
+    color = 'tab:red'
+    ax2.set_ylabel('buy/sell Signal', color=color)  # we already handled the x-label with ax1
+    ax2.plot(tmpDf.index, tmpDf['preds'], color='red')
+    # ax2.plot(tmpDf.index, tmpDf['preds'].rolling(10).mean().shift(-5), color=color)
+    ax2.tick_params(axis='y', labelcolor=color)
+
+    fig.tight_layout()  # otherwise the right y-label is slightly clipped
+    plt.show()
+
+
+
+################################################
+###### Test Runners
+################################################
+
+input_calculators=[trend.dpo, trend.macd, trend.macd_signal, trend.macd_diff, momentum.tsi, momentum.rsi, trend.trix, volatility.bollinger_hband, volatility.bollinger_lband]
+output_calculators=[getBuySellGains]
 
 def runDTBacktest(df, 
                   filename=None,
                   input_calculators=input_calculators,
                   output_calculators=output_calculators,
                   trainLearner=trainDecisionTree,
-                  make_trades=makeTrades,
+                  make_trades=stdConfidenceTrades,
                   calc_gains=getBuySellGains):
     
     """
