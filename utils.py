@@ -26,7 +26,7 @@ def readDEX(filepath):
     return rawData
 
 
-def readDAT(filename):
+def readDAT(testname):
     """
     Reads DAT csv file and returns the dataframe.
     These files can be downloaded from : http://www.histdata.com/download-free-forex-historical-data/?/metatrader/1-minute-bar-quotes
@@ -34,7 +34,7 @@ def readDAT(filename):
 
     dateparse = lambda x: pd.datetime.strptime(x, '%Y.%m.%d')
     
-    df = pandas.read_csv(filename, names=['date','time','open', 'max', 'min', 'close', 'vol'])
+    df = pandas.read_csv(testname, names=['date','time','open', 'max', 'min', 'close', 'vol'])
     df['datetime'] = df['date'] + ' - ' + df['time']
     df['datetime'] = pandas.to_datetime(df['datetime'], format='%Y.%m.%d - %H:%M')
     return df
@@ -43,8 +43,8 @@ def readAllDatForCurrency(data_dir, currencyCode):
     """
     Given a currency code and a directory, will read all DAT files for that currency code into one large dataframe.
     """
-    dataFileNames = list(filter(lambda a : (currencyCode in a), listdir(data_dir)))
-    dfs = [readDAT(data_dir + name) for name in dataFileNames]
+    datatestnames = list(filter(lambda a : (currencyCode in a), listdir(data_dir)))
+    dfs = [readDAT(data_dir + name) for name in datatestnames]
     allDf = pd.concat(dfs)
     allDf = allDf.sort_values(by=['datetime'], ascending=True).reset_index(drop=True).set_index('datetime')
     return allDf
@@ -91,6 +91,18 @@ def splitData(df, split):
     return train, test
 
 
+def walkForwardInds(df, num_tests, train_split):
+    sampLen = len(df) / (train_split + num_tests*(1.0 - train_split))
+    sampLen = int(sampLen)
+    test_len = int(sampLen * (1.-train_split))
+    
+    splits = []
+    for i in range(num_tests):
+        start = test_len*i
+        end = start + sampLen
+        splits.append((start, end))
+    return splits
+
 def trainDecisionTree(inputDf, outputDf):
     """
     Takes inputDf and outputDf and trains and returns a learner
@@ -135,9 +147,10 @@ def getBuySellGains(series, trades):
     - series : np.Series(priceTicksForStock)
     - trades : Array of tuples of (buyPosition, sellPosition), where positions are integer indexes to place trades
     """
-    cumGains = others.daily_return(series).cumsum().fillna(0)
-    tradeGains = [cumGains[t[1]] - cumGains[t[0]] for t in trades]
-    tradeGains = np.add(np.divide(tradeGains, 100), 1.0)
+    marketAlphas = others.daily_return(series)
+    tradeGains = [
+        np.product(np.add(np.divide(marketAlphas[t[0]:t[1]], 100), 1.0))
+        for t in trades]
     return np.product(tradeGains)
 
 def getSummary(backTestResult):
@@ -145,12 +158,12 @@ def getSummary(backTestResult):
     returns = np.add(np.divide(others.daily_return(backTestResult['test_df'].close),100),1)
     
     return {
-        'filename' : backTestResult['filename'],
-        'gain' : backTestResult['gain'],
-        'total_gain' : np.product(returns),
+        'testname' : backTestResult['testname'],
+        'algo_gain' : backTestResult['gain'],
+        'buyhold_gain' : np.product(returns),
         'beat_market' : backTestResult['gain'] > np.product(returns),
-        'start_date' : backTestResult['test_df']['date'].iloc[0],
-        'end_date' : backTestResult['test_df']['date'].iloc[-1]
+        'start_date' : backTestResult['test_df'].index[0],
+        'end_date' : backTestResult['test_df'].index[-1]
     }
 
 
@@ -192,10 +205,10 @@ def plotResult(curResult, startInd, endInd):
 ################################################
 
 input_calculators=[trend.dpo, trend.macd, trend.macd_signal, trend.macd_diff, momentum.tsi, momentum.rsi, trend.trix, volatility.bollinger_hband, volatility.bollinger_lband]
-output_calculators=[getBuySellGains]
+output_calculators=[lambda s : utils.calcSmoothedGains(s, 30, 6*60)]
 
 def runDTBacktest(df, 
-                  filename=None,
+                  testname=None,
                   input_calculators=input_calculators,
                   output_calculators=output_calculators,
                   trainLearner=trainDecisionTree,
@@ -226,7 +239,7 @@ def runDTBacktest(df,
     totalGain = calc_gains(test_df['close'], trades)
     
     return {
-        'filename':filename,
+        'testname':testname,
         'gain' : totalGain,
         'dt' : decTree,
         'df':df,
