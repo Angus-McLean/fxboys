@@ -15,13 +15,19 @@ globals = {
 def init():
     
     # init api
+    print('Init API Connection')
     api = init_api()
-    init_db()
 
     # Load learner
+    print('Loading Pretrained Learner')
     globals['learner'] = pickle.load(open(config.cache_dir+'learner.sav', 'rb'))
-    
+
+    # Populate db
+    print('Reading + Recalculating Initial Data')
+    init_db()
+
     # Start polling
+    print('Start Polling for Prices')
     connect_stream(api)
 
 def init_api():
@@ -36,6 +42,12 @@ def init_api():
 def init_db():
     for cur in config.currencies:
         db[cur] = utils.readAllDatForCurrency(config.data_dir, cur)[-config.db_recalc_wind:]
+        db[cur] = recalc_inds(db[cur])
+
+        tmpDf = db[cur].dropna()
+        preds = tmpDf.apply(calc_pred, axis=1)
+        db[cur] = pandas.concat([db[cur], preds], axis=1, join_axes=[db[cur].index])
+
 
 
 def start_poll():
@@ -83,14 +95,15 @@ def recalc_inds(df):
 
 
 def proc_update(msg):
-    # print('proc_update :', msg)
+    print('proc_update :', msg)
+    if not msg.instrument:
+        return
     cur = msg.instrument.replace('_', '')
     row = oanda_msg_to_row(msg)
     # https://stackoverflow.com/questions/50840769/insert-row-with-datetime-index-to-dataframe
-    # db[cur].append(pandas.Series(row), ignore_index=True)
-    # db[cur].append(pd.DataFrame(row, index=[row['datetime']]))
+
     db[cur].append(pandas.DataFrame(row, columns=db[cur].columns ,index=[row['datetime']]))
-    db[cur] = recalc_inds(db[cur])
+    tmpDb = recalc_inds(db[cur][-config.db_recalc_wind:])
 
     pred = calc_pred(db[cur].iloc[-1])
     print('PREDICTION : ', msg.instrument, pred)
@@ -107,7 +120,8 @@ def oanda_msg_to_row(msg):
 
 
 def calc_pred(row):
-    rowData = row.iloc[-9:].values.reshape(1,-1)
+    input_cols = [fn.__name__ for fn in utils.input_calculators]
+    rowData = row[input_cols].values.reshape(1,-1)
     return globals['learner'].predict(rowData)
 
 
