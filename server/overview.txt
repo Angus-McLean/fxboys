@@ -1,0 +1,17 @@
+---- Trading Server Architecture ----
+
+Training : 
+- Load historic data
+- Train Learner --> Save trained learner
+
+Initialization : 
+- Load trained learner
+- Establish API connections
+- Start polling data endpoints
+
+Main thread : 
+- Poll for new tick values
+- Calc indicators and save latest values for indicators
+- Run learner + save outputted value
+- Notify trader of updated predictions
+    - Trader makes api calls for buys/sells
